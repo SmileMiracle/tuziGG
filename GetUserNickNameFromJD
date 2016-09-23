@@ -1,0 +1,183 @@
+package com.lyitong.util;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.UUID;
+import com.lyitong.util.JDVerificationCodeController;
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.codehaus.jackson.map.ObjectMapper;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+
+import com.lyitong.model.ResultType;
+import com.lyitong.util.HttpClient.RequestConfig;
+
+public class GetUserNickNameFromJD {
+	
+	//定义浏览器版本
+	public static final String UserAgent = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Safari/537.36";
+	//定义图片名称uuid以免重复
+    public static final String imageUUID = UUID.randomUUID().toString(); 
+    //定义解析json数据格式
+  	public final static ObjectMapper MAPPER = new ObjectMapper();
+  	//TODO 定义eid和fp
+    public static final String eid = null;
+  	public static final String fp = null;
+  	//添加日志支持
+  	public static Log log = LogFactory.getLog(GetUserNickNameFromJD.class);
+  	
+	public static String getUserNickNameByPhoneNum(String phoneNum) throws Exception {
+		
+		//第一步获取访问页面时随机生成的uuid
+				//设置请求头，跳过防盗链
+		        String baseUrl = "https://safe.jd.com/findPwd/index.action";
+			   	RequestConfig config = new RequestConfig();
+			   	config.setReferer(baseUrl);
+				config.setUserAgent(UserAgent);
+				
+				//模拟请求爬取HTML页面的UUID
+				Document authCodeDoc = Jsoup.connect(baseUrl).userAgent(UserAgent).get();
+				if(authCodeDoc==null){
+					throw new RuntimeException("链接异常请稍后重试。。。。。。");
+				}
+				
+				//获取dom对象
+				Element authCodeElement = authCodeDoc.getElementsByClass("item").get(1);
+				String select = authCodeElement.select("a[href]").get(0).attr("href");
+				//截取字符串
+				String uuid =  select.split("'")[1];
+				
+	   //第二步获取访问页面时生成的验证码路径			
+				
+				Element attr = authCodeDoc.getElementsByClass("item").get(1);
+				Element element = attr.getElementsByClass("fl").get(0).getElementsByTag("label").get(0).getElementsByTag("img").get(0);
+				String url = element.attr("src");
+			
+	   //第三步读取验证码到本地并调用外部接口解析验证码字符		
+				url = url.substring(0, url.lastIndexOf("=") + 1);
+				String imageUrl = "http:" + url + System.currentTimeMillis();
+				
+				//定义获取验证码的URL链接
+				String absolutePath = HttpClient.download(imageUrl, config, new HttpClient.CallBack<String>() {
+
+					@Override
+					public String onSuccess(InputStream inputStream) {
+						String uri = imageUUID + ".jpg";
+						String img_path = "D:\\image\\";//图片保存路径
+						File file = new File(img_path);
+						if (!file.exists())
+							file.mkdirs();
+						BufferedOutputStream bos = null;
+						BufferedInputStream bis = null;
+						File saveFile = new File(img_path + uri);
+						try {
+							bos = new BufferedOutputStream(new FileOutputStream(saveFile));
+							bis = new BufferedInputStream(inputStream);
+							int length;
+							byte[] buffer = new byte[1024];
+							while ((length = bis.read(buffer)) > 0) {
+								bos.write(buffer, 0, length);
+							}
+							return saveFile.getAbsolutePath();
+							
+						} catch (Exception e) {
+							return null;
+						} finally {
+							if (bis != null) {
+								try {
+									bis.close();
+								} catch (IOException e) {
+
+								}
+							}
+							if (bos != null) {
+								try {
+									bos.close();
+								} catch (IOException e) {
+
+								}
+							}
+						}
+					}
+
+					@Override
+					public String onFailed(int respCode) {
+						// TODO Auto-generated method stub
+						return null;
+					}
+
+					@Override
+					public String onException(Exception e) {
+						// TODO Auto-generated method stub
+						return null;
+					}
+				});
+				
+				log.info("AbsolutePath="+absolutePath);
+				if(StringUtils.isBlank(absolutePath)){
+					log.error("本地验证码图片存储位置为空请检查。。。。。。。。。。。。。。");
+					return null;
+				}
+				
+				
+				String parseAuthCode = JDVerificationCodeController.getVerificationCode(absolutePath);
+				log.info("ParseAuthCode="+parseAuthCode);
+				//System.out.println(parseAuthCode);
+			    if(StringUtils.isBlank(parseAuthCode)){
+			    	log.error("验证码解析失败请重试。。。。。。。。。。");
+			    	return null;
+			    	//throw new RuntimeException("验证码解析异常重试。。。。。。。");
+			    }
+				
+	     //第四步模拟请求获取K值并获取返回值，得到用户昵称
+			    
+				//定义获取K值的方法路径
+				String userUrl = "https://safe.jd.com/findPwd/doIndex.action?&uuid="+uuid+"&sourceId=usersafe&authCode="+parseAuthCode+"&username="+phoneNum+"&eid="+eid+"&fp="+fp;
+				String jsonData = HttpClient.get(userUrl,config);
+				log.info("JsonData="+jsonData);
+				
+				if(StringUtils.isBlank(jsonData)){
+					log.error("模拟请求失败，返回数据为空。。。。。。。。");
+					return null;
+				}
+				//解析返回数据获取K值
+				ResultType readValue = MAPPER.readValue(jsonData, ResultType.class);
+				log.info("ResultType="+readValue);
+				
+				if(readValue.getResultCode().equalsIgnoreCase("none")||readValue.getResultCode().equalsIgnoreCase("authCodeFailure")||readValue.getResultCode().equalsIgnoreCase("usernameFailure")){
+					log.error("返回数据解析失败。。。。。。。");
+					return null;
+					//throw new RuntimeException("请求参数异常请重试。。。。。。。");
+				}
+				
+				//获取K值后跳转用户昵称界面拿取用户昵称
+				String k = readValue.getK();
+				log.info("K="+k);
+				
+				if(StringUtils.isBlank(k)){
+					return null;
+				}
+				
+				
+				String indexUrl = "https://safe.jd.com/findPwd/findPwd.action?k="+k;
+				Document document = Jsoup.connect(indexUrl).userAgent(UserAgent).get();
+			    Element userInfo = document.getElementsByClass("item").get(1);
+			    String nickName = userInfo.getElementsByTag("strong").text();
+			    log.info("nickName="+nickName);
+			    
+			    if(StringUtils.isBlank(nickName)){
+			    	log.error("用户昵称为空。。。。。。。。。。");
+			    	return null;
+			    }
+			    
+				return nickName;
+				
+	}
+}
